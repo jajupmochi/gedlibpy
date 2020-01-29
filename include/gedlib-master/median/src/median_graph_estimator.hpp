@@ -42,7 +42,7 @@ namespace ged {
  * Supports the following options:
  * | <tt>\--@<option@> @<arg@></tt> | modified parameter | default  | more information |
  * | ------------------------------ | ------------------ | -------- | ---------------- |
- * | <tt>\--init-type RANDOM\|MEDOID</tt> | method for computing the initial medians | @p MEDOID | if @p MEDOID, the option @p \--random-inits has no effect |
+ * | <tt>\--init-type RANDOM\|MEDOID\|MIN\|MAX\|MEAN</tt> | method for computing the initial medians | @p RANDOM | unless @p RANDOM, the option @p \--random-inits has no effect |
  * | <tt>\--random-inits @<convertible to int greater 0@></tt> | number of randomly constructed initial medians | @p 50 | n.a. |
  * | <tt>\--randomness REAL\|PSEUDO</tt> | use real randomness or pseudo randomness | @p REAL | if @p REAL, the option @p \--seed has no effect |
  * | <tt>\--seed @<convertible to int greater equal 0@></tt> | seed for generating pseudo random numbers | @p 0 | n.a. |
@@ -80,23 +80,23 @@ public:
 	 * @param[in] init_options The options for the selected method. Default: "".
 	 * @note Has no effect unless "--init-type MEDOID" is passed to set_options().
 	 */
-	void set_init_method(Options::GEDMethod init_method, const std::string & init_options);
+	void set_init_method(Options::GEDMethod init_method, const std::string & init_options = "");
 
 	/*!
 	 * @brief Selects method to be used for block gradient descent..
-	 * @param[in] descent_method The selected method. Default: ged::Options::GEDMethod::REFINE.
+	 * @param[in] descent_method The selected method. Default: ged::Options::GEDMethod::BRANCH_FAST.
 	 * @param[in] descent_options The options for the selected method. Default: "".
 	 * @note Has no effect unless "--init-type MEDOID" is passed to set_options().
 	 */
-	void set_descent_method(Options::GEDMethod descent_method, const std::string & descent_options);
+	void set_descent_method(Options::GEDMethod descent_method, const std::string & descent_options = "");
 
 	/*!
 	 * @brief Selects method to be used for improving the sum of distances and the node maps for the converged median.
 	 * @param[in] refine_method The selected method. Default: ged::Options::GEDMethod::IPFP.
 	 * @param[in] refine_options The options for the selected method. Default: "".
-	 * @note Has no effect unless "--refine TRUE" is passed to set_options().
+	 * @note Has no effect if "--refine FALSE" is passed to set_options().
 	 */
-	void set_refine_method(Options::GEDMethod refine_method, const std::string & refine_options);
+	void set_refine_method(Options::GEDMethod refine_method, const std::string & refine_options = "");
 
 	/*!
 	 * @brief Computes a generalized median graph.
@@ -109,11 +109,19 @@ public:
 	void run(const std::vector<GEDGraph::GraphID> & graph_ids, GEDGraph::GraphID median_id);
 
 	/*!
+	 * @brief Returns the state of the estimator.
+	 * @return The state of the estimator at termination of the last call to run().
+	 * If run without time limit or maximum number of iterations, this method always returns ged::Options::AlgorithmState::TERMINATED.
+	 * Otherwise, the last uninterrupted state is returned.
+	 */
+	Options::AlgorithmState get_state() const;
+
+	/*!
 	 * @brief Returns the sum of distances.
 	 * @param[in] state The state of the estimator.
 	 * @return The sum of distances of the median when the estimator was in the state @p state during the last call to run().
 	 */
-	double get_sum_of_distances(Options::MedianGraphEstimatorState state = Options::MedianGraphEstimatorState::TERMINATED) const;
+	double get_sum_of_distances(Options::AlgorithmState state = Options::AlgorithmState::TERMINATED) const;
 
 	/*!
 	 * @brief Returns distance from the median.
@@ -132,11 +140,19 @@ public:
 	const NodeMap & get_node_map_from_median(GEDGraph::GraphID graph_id) const;
 
 	/*!
+	 * @brief Computes node map from the median by using the GED method employed to obtain the final node maps.
+	 * @param graph_id ID of the graph whose node map from the median should be returned.
+	 * Must not necessarily have been contained in the collection of IDs passed to run().
+	 * @return  Node map from the median to the graph with ID @p graph_id.
+	 */
+	const NodeMap & compute_node_map_from_median(GEDGraph::GraphID graph_id) const;
+
+	/*!
 	 * @brief Returns the runtime.
 	 * @param[in] state The state of the estimator.
 	 * @return The runtime up to the point where the estimator entered the state @p state during the last call to run().
 	 */
-	double get_runtime(Options::MedianGraphEstimatorState state = Options::MedianGraphEstimatorState::TERMINATED) const;
+	double get_runtime(Options::AlgorithmState state = Options::AlgorithmState::TERMINATED) const;
 
 	/*!
 	 * @brief Returns number of iterations.
@@ -155,6 +171,12 @@ public:
 	 * @return Overall number of times the order of the median increased during the last call to run().
 	 */
 	std::size_t get_num_times_order_increased() const;
+
+	/*!
+	 * @brief Returns the number of converged descents.
+	 * @return Overall number of converged descents during the last call to run().
+	 */
+	std::size_t get_num_converged_descents() const;
 
 	/*!
 	 * @brief Returns pointer to the environment employed by the estimator.
@@ -196,6 +218,8 @@ private:
 
 	std::size_t num_random_inits_;
 
+	std::size_t desired_num_random_inits_;
+
 	bool use_real_randomness_;
 
 	std::size_t seed_;
@@ -220,6 +244,8 @@ private:
 
 	GEDGraph::GraphID median_id_;
 
+	UserNodeID median_node_id_prefix_;
+
 	std::map<GEDGraph::GraphID, NodeMap> node_maps_from_median_;
 
 	double sum_of_distances_;
@@ -240,15 +266,25 @@ private:
 
 	std::size_t num_increase_order_;
 
+	std::size_t num_converged_descents_;
+
+	Options::AlgorithmState state_;
+
 	void set_default_options_();
 
-	void construct_initial_medians_(const std::vector<GEDGraph::GraphID> & graph_ids, std::vector<ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel>> & initial_medians) const;
+	void construct_initial_medians_(const std::vector<GEDGraph::GraphID> & graph_ids, const Timer & timer, std::vector<ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel>> & initial_medians);
 
-	void compute_medoid_(const std::vector<GEDGraph::GraphID> & graph_ids, std::vector<ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel>> & initial_medians) const;
+	void compute_medoid_(const std::vector<GEDGraph::GraphID> & graph_ids, const Timer & timer, std::vector<ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel>> & initial_medians);
 
-	void sample_initial_medians_(const std::vector<GEDGraph::GraphID> & graph_ids, std::vector<ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel>> & initial_medians) const;
+	void compute_max_order_graph_(const std::vector<GEDGraph::GraphID> & graph_ids, std::vector<ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel>> & initial_medians) const;
 
-	bool termination_criterion_met_(bool converged, const Timer & timer, std::size_t itr, std::size_t itrs_without_update) const;
+	void compute_min_order_graph_(const std::vector<GEDGraph::GraphID> & graph_ids, std::vector<ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel>> & initial_medians) const;
+
+	void compute_mean_order_graph_(const std::vector<GEDGraph::GraphID> & graph_ids, std::vector<ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel>> & initial_medians) const;
+
+	void sample_initial_medians_(const std::vector<GEDGraph::GraphID> & graph_ids, std::vector<ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel>> & initial_medians);
+
+	bool termination_criterion_met_(bool converged, const Timer & timer, std::size_t itr, std::size_t itrs_without_update);
 
 	bool update_median_(const std::map<GEDGraph::GraphID, ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel>> & graphs, ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel> & median) const;
 
@@ -265,6 +301,9 @@ private:
 	void delete_node_from_median_(std::size_t id_deleted_node, ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel> & median);
 
 	bool increase_order_(const std::map<GEDGraph::GraphID, ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel>> & graphs, ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel> & median);
+
+	double compute_best_insertion_delta_(const std::map<GEDGraph::GraphID, ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel>> & graphs, 
+			std::map<GEDGraph::GraphID, std::size_t> & best_config, UserNodeLabel & best_label) const;
 
 	double compute_insertion_delta_unlabeled_(const std::map<GEDGraph::GraphID, std::vector<std::pair<std::size_t, UserNodeLabel>>> & inserted_nodes,
 			std::map<GEDGraph::GraphID, std::size_t> & best_config, UserNodeLabel & best_label) const;
@@ -287,7 +326,9 @@ private:
 
 	void add_node_to_median_(const std::map<GEDGraph::GraphID, std::size_t> & best_config, const UserNodeLabel & best_label, ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel> & median);
 
-	void improve_sum_of_distances_();
+	void improve_sum_of_distances_(const Timer & timer);
+
+	bool median_available_() const;
 
 };
 

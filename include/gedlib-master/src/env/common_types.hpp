@@ -33,7 +33,6 @@
 #include <limits>
 #include <vector>
 #include <list>
-#include <initializer_list>
 #include <map>
 #include <queue>
 #include <string>
@@ -205,6 +204,7 @@ struct Options {
 		PROTEIN,     //!< Selects ged::Protein.
 		FINGERPRINT, //!< Selects ged::Fingerprint.
 		LETTER,      //!< Selects ged::Letter.
+		LETTER2,		 //!< Selects ged:Letter2.
 		CONSTANT     //!< Selects ged::Constant.
 	};
 
@@ -242,15 +242,35 @@ struct Options {
 	};
 
 	/*!
-	 * @brief Specifies state of ged::MedianGraphEstimator.
+	 * @brief can be used to specify the state of an algorithm.
 	 */
-	enum class MedianGraphEstimatorState {
-		INITIALIZED,//!< Initial medians have been generated but no descent has been run.
-		CONVERGED,  //!< The block gradient descent has converged.
-		TERMINATED  //!< The algorithm has terminated, i.e., the node maps for the converged median have been refined if this option has been selected.
+	enum class AlgorithmState {
+		CALLED,     //!< The algorithm has been called.
+		INITIALIZED,//!< The algorithm has been initialized.
+		CONVERGED,  //!< The algorithm has converged.
+		TERMINATED  //!< The algorithm has terminated.
 	};
 
 };
+
+std::ostream & operator<<(std::ostream & os, const Options::AlgorithmState & state) {
+	switch (state) {
+	case Options::AlgorithmState::CALLED:
+		os << 0;
+		break;
+	case Options::AlgorithmState::INITIALIZED:
+		os << 1;
+		break;
+	case Options::AlgorithmState::CONVERGED:
+		os << 2;
+		break;
+	case Options::AlgorithmState::TERMINATED:
+		os << 3;
+		break;
+	}
+	return os;
+
+}
 
 /*!
  * @brief Streams Options::GEDMethod object.

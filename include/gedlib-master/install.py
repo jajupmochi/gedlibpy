@@ -26,7 +26,7 @@
 # @details 
 # Usage: 
 # ```sh
-# $ python install.py [--help] [-h] [--doc] [--tests all|ged_env_tests|lsap_solver_tests|pr2018|sspr2018|vldbj2019|unit_tests] [--median] [--boost \<BOOST_ROOT\>] [--gurobi \<GUROBI_ROOT\>][--debug] [--clean] [--update_makefile] [--lib gxl|\<indentifier>,\<UserNodeID\>,\<UserNodeLabel\>,\<UserEdgeLabel\>]
+# $ python install.py [--help] [-h] [--doc] [--tests all|ged_env_tests|lsap_solver_tests|pr2018|sspr2018|vldbj2019|unit_tests|median|cluster|bst] [--gurobi \<GUROBI_ROOT\>][--debug] [--clean] [--update_makefile] [--lib gxl|\<indentifier>,\<UserNodeID\>,\<UserNodeLabel\>,\<UserEdgeLabel\>]
 # ```
 #
 # For more information, execute `$ python install.py --help`.
@@ -34,10 +34,12 @@
 '''Installs GEDLIB and its dependencies.'''
 
 from subprocess import call
+from subprocess import check_output
 import argparse
 import shutil
 import os.path
 import glob
+import platform
 
 def append_ged_env_hpp(identifier, node_id_type, node_label_type, edge_label_type):
 	append = ""
@@ -62,29 +64,31 @@ def append_ged_env_hpp(identifier, node_id_type, node_label_type, edge_label_typ
 	shutil.move("temp", "src/env/ged_env.hpp")
 
 def append_cmake_lists(identifier):
-	append = ""
-	append = append + "\n"
-	append = append + "add_library(" + identifier.lower() + "gedlib SHARED env/ged_env." + identifier.lower() + ".cpp)\n"
-	append = append + "set_target_properties(" + identifier.lower() + "gedlib PROPERTIES SUFFIX \".so\")\n"
-	append = append + "target_link_libraries(" + identifier.lower() + "gedlib nomad doublefann svm)\n"
-	append = append + "if(APPLE)\n"
-	append = append + "  add_custom_command(TARGET " + identifier.lower() + "gedlib POST_BUILD COMMAND install_name_tool -change libnomad.so ${NOMAD_HOME}/lib/libnomad.so ${LIBRARY_OUTPUT_PATH}/lib" + identifier.lower() + "gedlib.so)\n"
-	append = append + "  add_custom_command(TARGET " + identifier.lower() + "gedlib POST_BUILD COMMAND install_name_tool -change libdoublefann.2.dylib ${FANN_HOME}/lib/libdoublefann.2.dylib ${LIBRARY_OUTPUT_PATH}/lib" + identifier.lower() + "gedlib.so)\n"
-	append = append + "add_custom_command(TARGET " + identifier.lower() + "gedlib POST_BUILD COMMAND install_name_tool -change libsvm.so ${LIBSVM_HOME}/libsvm.so ${LIBRARY_OUTPUT_PATH}/lib" + identifier.lower() + "gedlib.so)\n"
-	append = append + "endif()\n"
-	delete_line = 0
-	temp = open("temp", "wb")
-	with open("src/CMakeLists.txt", "r") as f:
-		for line in f:
-			if line.startswith("add_library(") and not line.startswith("add_library(gxlgedlib"):
-				delete_line = 9
-			if line.startswith("endif()"):
-				line = line + append
-			if delete_line <= 0:
-				temp.write(line)
-			delete_line = delete_line - 1
-	temp.close()
-	shutil.move("temp", "src/CMakeLists.txt")
+    append = ""
+    append = append + "\n"
+    append = append + "add_library(" + identifier.lower() + "gedlib SHARED env/ged_env." + identifier.lower() + ".cpp)\n"
+    append = append + "set_target_properties(" + identifier.lower() + "gedlib PROPERTIES SUFFIX \".so\")\n"
+    append = append + "target_link_libraries(" + identifier.lower() + "gedlib nomad doublefann svm)\n"
+    append = append + "if(APPLE)\n"
+    append = append + "  add_custom_command(TARGET " + identifier.lower() + "gedlib POST_BUILD COMMAND install_name_tool -change libnomad.so ${NOMAD_HOME}/lib/libnomad.so ${LIBRARY_OUTPUT_PATH}/lib" + identifier.lower() + "gedlib.so)\n"
+    append = append + "  add_custom_command(TARGET " + identifier.lower() + "gedlib POST_BUILD COMMAND install_name_tool -change libdoublefann.2.dylib ${FANN_HOME}/lib/libdoublefann.2.dylib ${LIBRARY_OUTPUT_PATH}/lib" + identifier.lower() + "gedlib.so)\n"
+    append = append + "  add_custom_command(TARGET " + identifier.lower() + "gedlib POST_BUILD COMMAND install_name_tool -change libsvm.so ${LIBSVM_HOME}/libsvm.so ${LIBRARY_OUTPUT_PATH}/lib" + identifier.lower() + "gedlib.so)\n"
+    append = append + "  target_link_libraries(" + identifier.lower() + "gedlib omp)\n"
+    append = append + "  add_custom_command(TARGET " + identifier.lower() + "gedlib POST_BUILD COMMAND install_name_tool -change libomp.dylib ${OMP_HOME}/lib/libomp.dylib ${LIBRARY_OUTPUT_PATH}/lib" + identifier.lower() + "gedlib.so)\n"
+    append = append + "endif()\n"
+    delete_line = 0
+    temp = open("temp", "wb")
+    with open("src/CMakeLists.txt", "r") as f:
+        for line in f:
+            if line.startswith("add_library(") and not line.startswith("add_library(gxlgedlib"):
+                delete_line = 9
+            if line.startswith("endif()"):
+                line = line + append
+            if delete_line <= 0:
+                temp.write(line)
+            delete_line = delete_line - 1
+    temp.close()
+    shutil.move("temp", "src/CMakeLists.txt")
 
 def create_template_instantiation(identifier, node_id_type, node_label_type, edge_label_type):
 	with open("src/env/ged_env." + identifier.lower() + ".cpp", "w") as f:
@@ -113,7 +117,12 @@ def parse_custom_types(custom_types):
 
 def create_directories():
 	print("\n***** Create directories for shared libraries, executables and output. *****")
-	commands = "mkdir -p lib; mkdir -p tests/tkde2019/bin; mkdir -p tests/tkde2019/output; mkdir -p tests/vldbj2019/bin; mkdir -p tests/vldbj2019/ini; mkdir -p tests/vldbj2019/results; median/bin; mkdir -p median/output; mkdir -p tests/sspr2018/bin; mkdir -p tests/sspr2018/output; mkdir -p tests/unit_tests/bin; mkdir -p tests/unit_tests/output"
+	commands = "mkdir -p lib; "
+	commands = commands + "mkdir -p tests/tkde2019/bin; mkdir -p tests/tkde2019/output; "
+	commands = commands + "mkdir -p tests/vldbj2019/bin; mkdir -p tests/vldbj2019/ini; mkdir -p tests/vldbj2019/results; "
+	commands = commands + "mkdir -p median/bin; mkdir -p median/output; mkdir -p median/data; mkdir -p median/data/Letter; mkdir -p median/data/Mutagenicity; "
+	commands = commands + "mkdir -p tests/sspr2018/bin; mkdir -p tests/sspr2018/output; "
+	commands = commands + "mkdir -p tests/unit_tests/bin; mkdir -p tests/unit_tests/output"
 	call(commands, shell=True)
 
 def build_external_libraries():
@@ -130,16 +139,20 @@ def build_external_libraries():
 		f = open("ext/.INSTALLED", "w")
 		f.close()
 		
-def determine_gurobi_version(gurobi_root):
+def determine_gurobi_dylib(gurobi_root):
 	if not os.path.isdir(gurobi_root):
 		raise Exception("Invalid argument \"" + gurobi_root + "\" for option gurobi: not a directory. Usage: python install.py [--gurobi <path-to-root-directory-of-Gurobi>] [...]")
-	gurobi_shared_lib = glob.glob(gurobi_root + "*/lib/libgurobi*.so")[0]
-	return gurobi_shared_lib[len(gurobi_shared_lib)-5:len(gurobi_shared_lib)-3]
-	
+	return "gurobi" + gurobi_root[gurobi_root.index("gurobi") + 6 : gurobi_root.index("gurobi") + 8]
+
+def determine_gurobi_statlib(gurobi_root):
+	statlib = "gurobi_c++"
+	if platform.system() == "Linux":
+		info = {item.split(":\t")[0] : item.split(":\t")[1] for item in subprocess.check_output("lsb_release -a", shell=True).decode("utf-8").split("\n")[:-1]}
+		if info["Distributor ID"] == "Ubuntu" and (info["Release"] == "16.04" or info["Release"] == "18.04"):
+			statlib = "gurobi_g++5.2"
+	return statlib	
 
 def build_gedlib(args):
-	if not os.path.isdir(args.boost):
-		raise Exception("Invalid argument \"" + args.boost + "\" for option boost: not a directory. Usage: python install.py [--boost <path-to-directory-containing-Boost-sources>] [...]")
 	identifier = "gxl"
 	if args.lib and args.lib != "gxl":
 		identifier, node_id_type, node_label_type, edge_label_type = parse_custom_types(args.lib)
@@ -161,13 +174,15 @@ def build_gedlib(args):
 	
 	if (not os.path.isfile("build/Makefile")):
 		print("\n***** Run CMake. *****")
-		commands = "cd build; rm -rf *; cmake .. -DBOOST_ROOT=" + args.boost + " -DCMAKE_BUILD_TYPE="
+		commands = "cd build; rm -rf *; cmake .. -DCMAKE_BUILD_TYPE="
 		if args.debug:
 			commands = commands + "Debug"
 		else:
 			commands = commands + "Release"
 		if args.gurobi:
-			commands = commands + " -DGUROBI_ROOT=" + args.gurobi + " -DGUROBI_VERSION=" + determine_gurobi_version(args.gurobi)
+			commands = commands + " -DGUROBI_ROOT=" + args.gurobi + " -DGUROBI_DYLIB=" + determine_gurobi_dylib(args.gurobi) + " -DGUROBI_STATLIB=" + determine_gurobi_statlib(args.gurobi)
+		if platform.system() == "Darwin":
+			commands = commands + " -DOMP_HOME=" + check_output("brew --prefix", shell=True).decode("utf-8")
 		call(commands, shell=True)
 
 	if args.doc:
@@ -189,11 +204,6 @@ def build_gedlib(args):
 			commands = "cd build; make " + args.tests
 			call(commands, shell=True)
 			
-	if args.median:
-		print("\n***** Build executable for median graph computation on LETTER graphs. *****")
-		commands = "cd build; make median"
-		call(commands, shell=True)
-			
 
 print("**************************************************")
 print("                    GEDLIB 1.0                    ")
@@ -201,19 +211,15 @@ print("                Installation Script               ")
 print("**************************************************")
 
 parser = argparse.ArgumentParser(description="Installs GEDLIB and its dependencies unless they have already been installed.", epilog="If called without arguments, only the dependencies are installed.")
-parser.add_argument("--doc", help="build documentation; requires --boost <BOOST_ROOT>", action="store_true")
-parser.add_argument("--lib", help="build shared library; requires --boost <BOOST_ROOT>", metavar="gxl|<indentifier>,<UserNodeID>,<UserNodeLabel>,<UserEdgeLabel>")
-parser.add_argument("--tests", help="build test executables; requires --boost <BOOST_ROOT>", metavar="all|unit_tests|ged_env_tests|lsap_solver_tests|pr2018|sspr2018|vldbj2019|vldbj_train_ml|vldbj_test_lsape_based_methods|vldbj_test_lp_based_methods|vldbj_test_ls_based_methods|vldbj_test_misc_methods", choices=["all", "unit_tests", "ged_env_tests", "lsap_solver_tests", "pr2018", "sspr2018", "vldbj2019", "vldbj_train_ml", "vldbj_test_lsape_based_methods", "vldbj_test_lp_based_methods", "vldbj_test_ls_based_methods", "vldbj_test_misc_methods"])
-parser.add_argument("--median", help="build binary for median graph computation on letter graphs", action="store_true")
-parser.add_argument("--boost", metavar="<BOOST_ROOT>", help="specify path to directory containing Boost sources")
+parser.add_argument("--doc", help="build documentation", action="store_true")
+parser.add_argument("--lib", help="build shared library", metavar="gxl|<indentifier>,<UserNodeID>,<UserNodeLabel>,<UserEdgeLabel>")
+parser.add_argument("--tests", help="build test executables", metavar="all|unit_tests|ged_env_tests|lsap_solver_tests|pr2018|sspr2018|vldbj2019|vldbj_train_ml|vldbj_test_lsape_based_methods|vldbj_test_lp_based_methods|vldbj_test_ls_based_methods|vldbj_test_misc_methods|median|cluster|bst", choices=["all", "unit_tests", "ged_env_tests", "lsap_solver_tests", "pr2018", "sspr2018", "vldbj2019", "vldbj_train_ml", "vldbj_test_lsape_based_methods", "vldbj_test_lp_based_methods", "vldbj_test_ls_based_methods", "vldbj_test_misc_methods", "median", "cluster", "bst"])
 parser.add_argument("--gurobi", metavar="<GUROBI_ROOT>", help="specify path to directory containing Gurobi")
 parser.add_argument("--debug", help="build in debug mode", action="store_true")
 parser.add_argument("--clean", help="clean build directory and update makefile before build", action="store_true")
 args = parser.parse_args()
-if not args.boost and (args.lib or args.tests or args.doc):
-	raise Exception("The argument --boost BOOST is required if the script is called with one of the options --lib, --tests or --doc.")
 build_external_libraries()
 create_directories()
-if args.lib or args.tests or args.doc or args.median:
+if args.lib or args.tests or args.doc:
 	build_gedlib(args)
 print("\n***** Successfully installed GEDLIB. *****")

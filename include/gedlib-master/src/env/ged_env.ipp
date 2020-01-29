@@ -138,10 +138,18 @@ load_exchange_graph(const ged::ExchangeGraph<UserNodeID, UserNodeLabel, UserEdge
 template<>
 GEDGraph::GraphID
 GEDEnv<GXLNodeID, GXLLabel, GXLLabel>::
-load_gxl_graph(const std::string & filename, Options::GXLNodeEdgeType node_type, Options::GXLNodeEdgeType edge_type,
+load_gxl_graph(const std::string & graph_dir, const std::string & gxl_file_name, Options::GXLNodeEdgeType node_type, Options::GXLNodeEdgeType edge_type,
 		const std::unordered_set<std::string> & irrelevant_node_attributes, const std::unordered_set<std::string> & irrelevant_edge_attributes, GEDGraph::GraphID graph_id, const std::string & graph_class) {
 
 	// read the file into a property tree
+	std::string filename("");
+	if (graph_dir.back() == '/') {
+		filename = graph_dir + gxl_file_name;
+	}
+	else {
+		filename = graph_dir + "/" + gxl_file_name;
+	}
+
 	boost::property_tree::ptree root;
 	try {
 		read_xml(filename, root);
@@ -152,23 +160,23 @@ load_gxl_graph(const std::string & filename, Options::GXLNodeEdgeType node_type,
 
 	// first sanity checks
 	if (root.count("gxl") == 0) {
-		throw Error("The file " + filename + " has the wrong format: no xml-element <gxl>.");
+		throw Error("The file " + gxl_file_name + " has the wrong format: no xml-element <gxl>.");
 	}
 	if (root.count("gxl") >= 2) {
-		throw Error("The file " + filename + " has the wrong format: more than one xml-element <gxl>.");
+		throw Error("The file " + gxl_file_name + " has the wrong format: more than one xml-element <gxl>.");
 	}
 	root = root.get_child("gxl");
 	if (root.count("graph") == 0) {
-		throw Error("The file " + filename + " has the wrong format: no xml-element <gxl>.<graph>");
+		throw Error("The file " + gxl_file_name + " has the wrong format: no xml-element <gxl>.<graph>");
 	}
 	if (root.count("graph") >= 2) {
-		throw Error("The file " + filename + " has the wrong format: more than one xml-element <gxl>.<graph>");
+		throw Error("The file " + gxl_file_name + " has the wrong format: more than one xml-element <gxl>.<graph>");
 	}
 	root = root.get_child("graph");
 
 	// add new graph to the environment
 	if (graph_id == ged::undefined()) {
-		graph_id = add_graph(filename, graph_class);
+		graph_id = add_graph(gxl_file_name, graph_class);
 	}
 	else {
 		clear_graph(graph_id);
@@ -280,7 +288,7 @@ load_gxl_graphs(const std::string & graph_dir, const std::string & file, Options
 			catch (const boost::property_tree::ptree_bad_data & error) {
 				throw Error("The file " + file + " has the wrong format: corrupted content in xml-attribute \"class\" of element <GraphCollection>.<graph>");
 			}
-			graph_ids.push_back(load_gxl_graph(graph_dir + gxl_file, node_type, edge_type, irrelevant_node_attributes, irrelevant_edge_attributes, ged::undefined(), graph_class));
+			graph_ids.push_back(load_gxl_graph(graph_dir, gxl_file, node_type, edge_type, irrelevant_node_attributes, irrelevant_edge_attributes, ged::undefined(), graph_class));
 		}
 		else if (val.first != "<xmlattr>") {
 			throw Error("The file " + file + " has the wrong format: unexpected element <GraphCollection>.<" + val.first + ">.");
@@ -313,6 +321,24 @@ save_as_gxl_graph(GEDGraph::GraphID graph_id, const std::string & gxl_file_name)
 	}
 	gxl_file << "</graph>\n</gxl>\n";
 	gxl_file.close();
+}
+
+template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
+void
+GEDEnv<UserNodeID, UserNodeLabel, UserEdgeLabel>::
+save_graph_collection(const std::string & xml_file_name, const std::vector<std::string> & gxl_file_names, const std::vector<std::string> & graph_classes) const {
+	if ((not graph_classes.empty()) and (graph_classes.size() != gxl_file_names.size())) {
+		throw Error("The number of GXL files does not match the number of graph classes.");
+	}
+	std::ofstream xml_file(xml_file_name.c_str());
+	xml_file << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+	xml_file << "<!DOCTYPE GraphCollection SYSTEM \"http://www.inf.unibz.it/~blumenthal/dtd/GraphCollection.dtd\">\n";
+	xml_file << "<GraphCollection>\n";
+	for (std::size_t graph_id{0}; graph_id < gxl_file_names.size(); graph_id++) {
+		xml_file << "\t<graph file=\"" << gxl_file_names.at(graph_id) << "\" class=\"" << (graph_classes.empty() ? "no_class" : graph_classes.at(graph_id)) << "\"/>\n";
+	}
+	xml_file << "</GraphCollection>\n";
+	xml_file.close();
 }
 
 template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
@@ -812,7 +838,7 @@ quasimetric_costs() const {
 template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
 void
 GEDEnv<UserNodeID, UserNodeLabel, UserEdgeLabel>::
-init(Options::InitType init_type) {
+init(Options::InitType init_type, bool print_to_stdout) {
 
 	// Throw an exception if no edit costs have been selected.
 	if (not ged_data_.edit_costs_) {
@@ -835,17 +861,28 @@ init(Options::InitType init_type) {
 	}
 
 	// Re-initialize adjacency matrices (also previously initialized graphs must be re-initialized because of possible re-allocation).
+	ProgressBar progress(ged_data_.graphs_.size());
+	if (print_to_stdout) {
+		std::cout << "\rInitializing graphs: " << progress << std::flush;
+	}
 	for (auto & graph : ged_data_.graphs_) {
 		if (not graph.initialized()) {
 			graph.setup_adjacency_matrix();
 			ged_data_.max_num_nodes_ = std::max(ged_data_.max_num_nodes_, graph.num_nodes());
 			ged_data_.max_num_edges_ = std::max(ged_data_.max_num_edges_, graph.num_edges());
 		}
+		if (print_to_stdout) {
+			progress.increment();
+			std::cout << "\rInitializing graphs: " << progress << std::flush;
+		}
+	}
+	if (print_to_stdout) {
+		std::cout << "\n";
 	}
 
 	// Initialize cost matrices if necessary.
 	if (ged_data_.eager_init_()) {
-		ged_data_.init_cost_matrices_();
+		ged_data_.init_cost_matrices_(print_to_stdout);
 	}
 
 	// Mark environment as initialized.

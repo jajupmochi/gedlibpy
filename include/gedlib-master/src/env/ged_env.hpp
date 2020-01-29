@@ -119,7 +119,8 @@ public:
 
 	/*!
 	 * @brief Load graph given in the [GXL file format](http://www.gupro.de/GXL/).
-	 * @param[in] file_name Complete path to GXL file.
+	 * @param[in] graph_dir The path to the directory containing the graphs.
+	 * @param[in] gxl_file_name Name of the GXL file.
 	 * @param[in] node_type Select if nodes are labeled or unlabeled.
 	 * @param[in] edge_type Select if edges are labeled or unlabeled.
 	 * @param[in] irrelevant_node_attributes Set of node attributes that are irrelevant for the selected edit costs.
@@ -131,7 +132,7 @@ public:
 	 * @warning Calls to this method create a compiler error unless the template parameters @p UserNodeID is set to ged::GXLUserNodeID
 	 * and the template parameters @p UserNodeLabel and @p UserEdgeLabel are set to ged::GXLLabel.
 	 */
-	GEDGraph::GraphID load_gxl_graph(const std::string & file_name, Options::GXLNodeEdgeType node_type, Options::GXLNodeEdgeType edge_type,
+	GEDGraph::GraphID load_gxl_graph(const std::string & graph_dir, const std::string & gxl_file_name, Options::GXLNodeEdgeType node_type, Options::GXLNodeEdgeType edge_type,
 			const std::unordered_set<std::string> & irrelevant_node_attributes, const std::unordered_set<std::string> & irrelevant_edge_attributes,
 			GEDGraph::GraphID graph_id = ged::undefined(), const std::string & graph_class = "");
 
@@ -161,10 +162,20 @@ public:
 	void save_as_gxl_graph(GEDGraph::GraphID graph_id, const std::string & gxl_file_name) const;
 
 	/*!
+	 * @brief Creates an XML GraphCollection file.
+	 * @param[in] xml_file_name Name of the created XML file.
+	 * @param[in] gxl_file_names Vector that contains the names of the GXL files that contain the graphs listed in the collection.
+	 * @param[in] graph_classes Vector that contains the classes of the graphs listed in the collection.
+	 * If left empty, all graphs are assigned the class "no_class". Otherwise, it must have the same size as @p gxl_file_names.
+	 */
+	void save_graph_collection(const std::string & xml_file_name, const std::vector<std::string> & gxl_file_names, const std::vector<std::string> & graph_classes = {}) const;
+
+	/*!
 	 * @brief Initializes the environment.
 	 * @param[in] init_type Select initialization type.
+	 * @param[in] print_to_stdout If set to @p true, the progress of the initialization is printed to std::out.
 	 */
-	void init(Options::InitType init_type = Options::InitType::EAGER_WITHOUT_SHUFFLED_COPIES);
+	void init(Options::InitType init_type = Options::InitType::EAGER_WITHOUT_SHUFFLED_COPIES, bool print_to_stdout = false);
 
 	/*!
 	 * @brief Check if the environment is initialized.

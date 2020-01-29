@@ -144,6 +144,18 @@ pre_image(GEDGraph::NodeID node) const {
 	return GEDGraph::undefined_node();
 }
 
+std::vector<GEDGraph::NodeID>
+NodeMap::
+get_forward_map() const {
+	return forward_map_;
+}
+
+std::vector<GEDGraph::NodeID>
+NodeMap::
+get_backward_map() const {
+	return backward_map_;
+}
+
 void
 NodeMap::
 erase_pre_image(GEDGraph::NodeID node) {
@@ -209,14 +221,6 @@ double
 NodeMap::
 induced_cost() const {
 	return induced_cost_;
-}
-
-std::vector<GEDGraph::NodeID> NodeMap::get_forward_map() const{
-	return forward_map_;
-}
-	
-std::vector<GEDGraph::NodeID> NodeMap::get_backward_map() const{
-	return backward_map_;
 }
 
 bool

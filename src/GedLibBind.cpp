@@ -1,14 +1,15 @@
 /****************************************************************************
  *                                                                          *
- *   Copyright (C) 2019 by Natacha Lambert and David B. Blumenthal          *
+ *   Copyright (C) 2020 by Natacha Lambert, David B. Blumenthal and Linlin  *
+ *   Jia                                                                    *
  *                                                                          *
  *   This file should be used by Python.                                    *
- * 	 Please call the Python module if you want to use GedLib with this code.* 
+ * 	 Please call the Python module if you want to use GedLib with this code.*
  *                                                                          *
  * 	 Otherwise, you can directly use GedLib for C++.                        *
  *                                                                          *
  ***************************************************************************/
- 
+
 /*!
  * @file GedLibBind.cpp
  * @brief Functions definition to call easly GebLib in Python without Gedlib's types
@@ -22,7 +23,7 @@
 
 using namespace std;
 
-//Definition of types and templates used in this code for my human's memory :). 
+//Definition of types and templates used in this code for my human's memory :).
 //ged::GEDEnv<UserNodeID, UserNodeLabel, UserEdgeLabel> env;
 //template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel> struct ExchangeGraph
 
@@ -32,30 +33,31 @@ using namespace std;
 ged::GEDEnv<ged::GXLNodeID, ged::GXLLabel, ged::GXLLabel> env; //Environment variable
 
 
-bool initialized = false; //Initialization boolean (because Env has one but not accessible). 
+bool initialized = false; //Initialization boolean (because Env has one but not accessible).
 
 bool isInitialized(){
 	return initialized;
 }
 
-//!< List of available edit cost functions readable by Python.  
-std::vector<std::string> editCostStringOptions = { 
-	"CHEM_1", 
-	"CHEM_2", 
-	"CMU", 
-	"GREC_1", 
-	"GREC_2", 
-	"LETTER", 
-	"FINGERPRINT", 
-	"PROTEIN", 
-	"CONSTANT" 
+//!< List of available edit cost functions readable by Python.
+std::vector<std::string> editCostStringOptions = {
+	"CHEM_1",
+	"CHEM_2",
+	"CMU",
+	"GREC_1",
+	"GREC_2",
+	"LETTER",
+  "LETTER2",
+	"FINGERPRINT",
+	"PROTEIN",
+	"CONSTANT"
 };
 
 std::vector<std::string> getEditCostStringOptions(){
 	return editCostStringOptions;
 }
 
-//!< Map of available edit cost functions between enum type in C++ and string in Python  
+//!< Map of available edit cost functions between enum type in C++ and string in Python
 std::map<std::string, ged::Options::EditCosts> editCostOptions = {
 	{"CHEM_1", ged::Options::EditCosts::CHEM_1},
 	{"CHEM_2", ged::Options::EditCosts::CHEM_2},
@@ -63,13 +65,14 @@ std::map<std::string, ged::Options::EditCosts> editCostOptions = {
 	{"GREC_1", ged::Options::EditCosts::GREC_1},
 	{"GREC_2", ged::Options::EditCosts::GREC_2},
 	{"LETTER", ged::Options::EditCosts::LETTER},
+  {"LETTER2", ged::Options::EditCosts::LETTER2},
 	{"FINGERPRINT", ged::Options::EditCosts::FINGERPRINT},
 	{"PROTEIN", ged::Options::EditCosts::PROTEIN},
-	{"CONSTANT", ged::Options::EditCosts::CONSTANT}	
+	{"CONSTANT", ged::Options::EditCosts::CONSTANT}
 };
 
- //!< List of available computation methods readable by Python.  
-std::vector<std::string> methodStringOptions = { 
+ //!< List of available computation methods readable by Python.
+std::vector<std::string> methodStringOptions = {
 	"BRANCH",
 	"BRANCH_FAST",
 	"BRANCH_TIGHT",
@@ -90,14 +93,14 @@ std::vector<std::string> methodStringOptions = {
 	"BP_BEAM",
 	"SIMULATED_ANNEALING",
 	"HED",
-	"STAR"				 
-}; 
+	"STAR"
+};
 
 std::vector<std::string> getMethodStringOptions(){
 	return methodStringOptions;
 }
 
-//!< Map of available computation methods readables between enum type in C++ and string in Python  
+//!< Map of available computation methods readables between enum type in C++ and string in Python
 std::map<std::string, ged::Options::GEDMethod> methodOptions = {
 	{"BRANCH", ged::Options::GEDMethod::BRANCH},
 	{"BRANCH_FAST", ged::Options::GEDMethod::BRANCH_FAST},
@@ -119,14 +122,14 @@ std::map<std::string, ged::Options::GEDMethod> methodOptions = {
 	{"BP_BEAM", ged::Options::GEDMethod::BP_BEAM},
 	{"SIMULATED_ANNEALING", ged::Options::GEDMethod::SIMULATED_ANNEALING},
 	{"HED", ged::Options::GEDMethod::HED},
-	{"STAR"	, ged::Options::GEDMethod::STAR},	
+	{"STAR"	, ged::Options::GEDMethod::STAR},
 };
 
 //!<List of available initilaization options readable by Python.
-std::vector<std::string> initStringOptions = { 
-	"LAZY_WITHOUT_SHUFFLED_COPIES", 
-	"EAGER_WITHOUT_SHUFFLED_COPIES", 
-	"LAZY_WITH_SHUFFLED_COPIES", 
+std::vector<std::string> initStringOptions = {
+	"LAZY_WITHOUT_SHUFFLED_COPIES",
+	"EAGER_WITHOUT_SHUFFLED_COPIES",
+	"LAZY_WITH_SHUFFLED_COPIES",
 	"EAGER_WITH_SHUFFLED_COPIES"
 };
 
@@ -134,7 +137,7 @@ std::vector<std::string> getInitStringOptions(){
 	return initStringOptions;
 }
 
-//!< Map of available initilaization options readables between enum type in C++ and string in Python 
+//!< Map of available initilaization options readables between enum type in C++ and string in Python
 std::map<std::string, ged::Options::InitType> initOptions = {
 	{"LAZY_WITHOUT_SHUFFLED_COPIES", ged::Options::InitType::LAZY_WITHOUT_SHUFFLED_COPIES},
 	{"EAGER_WITHOUT_SHUFFLED_COPIES", ged::Options::InitType::EAGER_WITHOUT_SHUFFLED_COPIES},
@@ -172,7 +175,7 @@ std::string getGraphName(std::size_t id){
 }
 
 std::size_t addGraph(std::string name, std::string classe){
-	ged::GEDGraph::GraphID newId = env.add_graph(name, classe); 
+	ged::GEDGraph::GraphID newId = env.add_graph(name, classe);
 	initialized = false;
 	return std::stoi(std::to_string(newId));
 }
@@ -236,13 +239,13 @@ std::vector<std::vector<std::size_t>> getGraphAdjacenceMatrix(std::size_t graphI
 /*!
  * @brief Returns the enum EditCost which correspond to the string parameter
  * @param editCost Select one of the predefined edit costs in the list.
- * @return The edit cost function which correspond in the edit cost functions map. 
+ * @return The edit cost function which correspond in the edit cost functions map.
  */
 ged::Options::EditCosts translateEditCost(std::string editCost){
 	 for (int i = 0; i != editCostStringOptions.size(); i++){
 		 if (editCostStringOptions[i] == editCost){
 			 return editCostOptions[editCostStringOptions[i]];
-		 } 
+		 }
 	 }
 	 return ged::Options::EditCosts::CONSTANT;
 }
@@ -263,13 +266,13 @@ void initEnv(){
 /*!
  * @brief Returns the enum IniType which correspond to the string parameter
  * @param initOption Select initialization options.
- * @return The init Type which correspond in the init options map. 
+ * @return The init Type which correspond in the init options map.
  */
 ged::Options::InitType translateInitOptions(std::string initOption){
 	 for (int i = 0; i != initStringOptions.size(); i++){
 		 if (initStringOptions[i] == initOption){
 			 return initOptions[initStringOptions[i]];
-		 } 
+		 }
 	 }
 	 return ged::Options::InitType::EAGER_WITHOUT_SHUFFLED_COPIES;
 }
@@ -282,13 +285,13 @@ void initEnv(std::string initOption){
 /*!
  * @brief Returns the enum Method which correspond to the string parameter
  * @param method Select the method that is to be used.
- * @return The computation method which correspond in the edit cost functions map. 
+ * @return The computation method which correspond in the edit cost functions map.
  */
 ged::Options::GEDMethod translateMethod(std::string method){
 	 for (int i = 0; i != methodStringOptions.size(); i++){
 		 if (methodStringOptions[i] == method){
 			 return methodOptions[methodStringOptions[i]];
-		 } 
+		 }
 	 }
 	 return ged::Options::GEDMethod::STAR;
 }
@@ -318,11 +321,11 @@ double getLowerBound(std::size_t g, std::size_t h){
 }
 
 std::vector<long unsigned int> getForwardMap(std::size_t g, std::size_t h){
-	return env.get_node_map(g,h).get_forward_map(); 
+	return env.get_node_map(g,h).get_forward_map();
 }
 
 std::vector<long unsigned int> getBackwardMap(std::size_t g, std::size_t h){
-	return env.get_node_map(g,h).get_backward_map(); 
+	return env.get_node_map(g,h).get_backward_map();
 }
 
 std::size_t getNodeImage(std::size_t g, std::size_t h, std::size_t nodeId){
@@ -338,11 +341,11 @@ std::size_t getDummyNode(){
 }
 
 std::vector<pair<std::size_t, std::size_t>> getNodeMap(std::size_t g, std::size_t h){
-	std::vector<pair<std::size_t, std::size_t>> res; 
+	std::vector<pair<std::size_t, std::size_t>> res;
 	std::vector<ged::NodeMap::Assignment> relation;
 	env.get_node_map(g,h).as_relation(relation);
 	for (const auto & assignment : relation) {
-		res.push_back(std::make_pair(assignment.first, assignment.second)); 
+		res.push_back(std::make_pair(assignment.first, assignment.second));
 	}
 	return res;
 }
@@ -383,9 +386,9 @@ std::vector<std::vector<int>> getAssignmentMatrix(std::size_t g, std::size_t h){
 }
 
 std::vector<std::vector<unsigned long int>> getAllMap(std::size_t g, std::size_t h){
-	std::vector<std::vector<unsigned long int>> res; 
+	std::vector<std::vector<unsigned long int>> res;
 	res.push_back(getForwardMap(g, h));
-	res.push_back(getBackwardMap(g,h)); 
+	res.push_back(getBackwardMap(g,h));
 	return res;
 }
 
@@ -399,8 +402,8 @@ bool quasimetricCosts(){
 
 /*!
  * @brief Returns the vector of values which correspond to the pointer parameter.
- * @param pointer The size_t pointer to convert. 
- * @return The vector which contains the pointer's values. 
+ * @param pointer The size_t pointer to convert.
+ * @return The vector which contains the pointer's values.
  */
 std::vector<size_t> translatePointer(std::size_t* pointer, std::size_t dataSize ){
 	std::vector<size_t> res;
@@ -412,8 +415,8 @@ std::vector<size_t> translatePointer(std::size_t* pointer, std::size_t dataSize 
 
 /*!
  * @brief Returns the vector of values which correspond to the pointer parameter.
- * @param pointer The double pointer to convert. 
- * @return The vector which contains the pointer's values. 
+ * @param pointer The double pointer to convert.
+ * @return The vector which contains the pointer's values.
  */
 std::vector<double> translatePointer(double* pointer, std::size_t dataSize ){
 	std::vector<double> res;
@@ -425,8 +428,8 @@ std::vector<double> translatePointer(double* pointer, std::size_t dataSize ){
 
 /*!
  * @brief Returns the vector of values which correspond to the pointer parameter.
- * @param pointer The size_t pointer to convert. 
- * @return The vector which contains the pointer's values, with double type. 
+ * @param pointer The size_t pointer to convert.
+ * @return The vector which contains the pointer's values, with double type.
  */
 std::vector<double> translateAndConvertPointer(std::size_t* pointer, std::size_t dataSize ){
 	std::vector<double> res;
@@ -478,12 +481,12 @@ std::vector<std::vector<double>> hungarianLSAPE(std::vector<std::vector<double>>
 }
 
 /*void medianLetter(pathFolder, pathXML, editCost, method, options="", initOption = "EAGER_WITHOUT_SHUFFLED_COPIES"){
-	
+
 	if(isInitialized()){
 		restartEnv();
 	}
 	setEditCost(editCost);*/
-	
+
 	/*std::string letter_class("A");
 	if (argc > 1) {
 		letter_class = std::string(argv[1]);
@@ -492,29 +495,29 @@ std::vector<std::vector<double>> hungarianLSAPE(std::vector<std::vector<double>>
 	/*if (argc > 2) {
 		seed = std::string(argv[2]);
 	}*/
-	
+
 	/*loadGXLGraph(pathFolder, pathXML);
 	std::vector<std::size_t> graph_ids = getAllGraphIds();
 	std::size_t median_id = env.add_graph("median", "");
-	
+
 	initEnv(initOption);
-	
+
 	setMethod(method);
-	
+
 	ged::MedianGraphEstimator<ged::GXLNodeID, ged::GXLLabel, ged::GXLLabel> median_estimator(&env, false);
 	median_estimator.set_options("--init-type RANDOM --randomness PSEUDO --seed " + seed);
 	median_estimator.run(graph_ids, median_id);
 	std::string gxl_file_name("../output/gen_median_Letter_HIGH_" + letter_class + ".gxl");
 	env.save_as_gxl_graph(median_id, gxl_file_name);*/
-	
+
 	/*std::string tikz_file_name("../output/gen_median_Letter_HIGH_" + letter_class + ".tex");
 	save_letter_graph_as_tikz_file(env.get_graph(median_id), tikz_file_name);*/
 //}
 
 /*!
- * @brief Returns the string which contains all element of a int list. 
- * @param vector The vector to translate. 
- * @return The string which contains all elements separated with a blank space. 
+ * @brief Returns the string which contains all element of a int list.
+ * @param vector The vector to translate.
+ * @return The string which contains all elements separated with a blank space.
  */
 std::string toStringVectorInt(std::vector<int> vector){
 	std::string res = "";
@@ -523,14 +526,14 @@ std::string toStringVectorInt(std::vector<int> vector){
     {
        res += std::to_string(vector[i]) + " ";
     }
-    
+
     return res;
 }
 
 /*!
- * @brief Returns the string which contains all element of a unsigned long int list. 
- * @param vector The vector to translate. 
- * @return The string which contains all elements separated with a blank space. 
+ * @brief Returns the string which contains all element of a unsigned long int list.
+ * @param vector The vector to translate.
+ * @return The string which contains all elements separated with a blank space.
  */
 std::string toStringVectorInt(std::vector<unsigned long int> vector){
 	std::string res = "";
@@ -539,6 +542,6 @@ std::string toStringVectorInt(std::vector<unsigned long int> vector){
     {
         res += std::to_string(vector[i]) + " ";
     }
-    
+
     return res;
 }

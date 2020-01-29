@@ -33,9 +33,9 @@ template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
 MedianGraphEstimator<UserNodeID, UserNodeLabel, UserEdgeLabel>::
 MedianGraphEstimator(GEDEnv<UserNodeID, UserNodeLabel, UserEdgeLabel> * ged_env, bool constant_node_costs):
 ged_env_{ged_env},
-init_method_{Options::GEDMethod::BRANCH_UNIFORM},
+init_method_{Options::GEDMethod::BRANCH_FAST},
 init_options_(""),
-descent_method_{Options::GEDMethod::REFINE},
+descent_method_{Options::GEDMethod::BRANCH_FAST},
 descent_options_(""),
 refine_method_{Options::GEDMethod::IPFP},
 refine_options_(""),
@@ -46,8 +46,9 @@ node_ins_cost_{ged_env_->node_ins_cost(ged_env_->get_node_label(1))},
 labeled_edges_{ged_env_->num_edge_labels() > 1},
 edge_del_cost_{ged_env_->edge_del_cost(ged_env_->get_edge_label(1))},
 edge_ins_cost_{ged_env_->edge_ins_cost(ged_env_->get_edge_label(1))},
-init_type_("MEDOID"),
+init_type_("RANDOM"),
 num_random_inits_{10},
+desired_num_random_inits_{10},
 use_real_randomness_{true},
 seed_{0},
 refine_{true},
@@ -60,6 +61,7 @@ init_type_increase_order_("K-MEANS++"),
 max_itrs_increase_order_{10},
 print_to_stdout_{2},
 median_id_{undefined()},
+median_node_id_prefix_(),
 node_maps_from_median_(),
 sum_of_distances_{0},
 best_init_sum_of_distances_{std::numeric_limits<double>::infinity()},
@@ -69,14 +71,16 @@ runtime_initialized_(),
 runtime_converged_(),
 itrs_(),
 num_decrease_order_{0},
-num_increase_order_{0} {
+num_increase_order_{0},
+num_converged_descents_{0},
+state_{Options::AlgorithmState::TERMINATED} {
 	if (ged_env_ == nullptr) {
 		throw Error("The environment pointer passed to the constructor of ged::MedianGraphEstimator is null.");
 	}
 	else if (not ged_env_->initialized()) {
 		throw Error("The environment is uninitialized. Call ged::GEDEnv::init() before passing it to the constructor of ged::MedianGraphEstimator.");
 	}
- }
+}
 
 template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
 void
@@ -88,13 +92,14 @@ set_options(const std::string & options) {
 	for (const auto & option : options_map) {
 		if (option.first == "init-type") {
 			init_type_ = option.second;
-			if (option.second != "MEDOID" and option.second != "RANDOM") {
-				throw ged::Error(std::string("Invalid argument ") + option.second + " for option init-type. Usage: options = \"[--init-type RANDOM|MEDOID] [...]\"");
+			if (option.second != "MEDOID" and option.second != "RANDOM" and option.second != "MIN" and option.second != "MAX" and option.second != "MEAN") {
+				throw ged::Error(std::string("Invalid argument ") + option.second + " for option init-type. Usage: options = \"[--init-type RANDOM|MEDOID|EMPTY|MIN|MAX|MEAN] [...]\"");
 			}
 		}
 		else if (option.first == "random-inits") {
 			try {
 				num_random_inits_ = std::stoul(option.second);
+				desired_num_random_inits_ = num_random_inits_;
 			}
 			catch (...) {
 				throw Error(std::string("Invalid argument \"") + option.second + "\" for option random-inits. Usage: options = \"[--random-inits <convertible to int greater 0>]\"");
@@ -240,20 +245,32 @@ set_refine_method(Options::GEDMethod refine_method, const std::string & refine_o
 	refine_options_ = refine_options;
 }
 
-
 template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
 void
 MedianGraphEstimator<UserNodeID, UserNodeLabel, UserEdgeLabel>::
 run(const std::vector<GEDGraph::GraphID> & graph_ids, GEDGraph::GraphID median_id) {
 
+	// Sanity checks.
 	if (graph_ids.empty()) {
 		throw Error("Empty vector of graph IDs, unable to compute median.");
+	}
+	bool all_graphs_empty{true};
+	for (auto graph_id : graph_ids) {
+		if (ged_env_->get_num_nodes(graph_id) > 0) {
+			median_node_id_prefix_ = ged_env_->get_graph(graph_id).original_node_ids.front();
+			all_graphs_empty = false;
+			break;
+		}
+	}
+	if (all_graphs_empty) {
+		throw Error("All graphs in the collection are empty.");
 	}
 
 	// Start timer and record start time.
 	auto start = std::chrono::high_resolution_clock::now();
 	Timer timer(time_limit_in_sec_);
 	median_id_ = median_id;
+	state_ = Options::AlgorithmState::TERMINATED;
 
 	// Get ExchangeGraph representations of the input graphs.
 	std::map<GEDGraph::GraphID, ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel>> graphs;
@@ -263,7 +280,7 @@ run(const std::vector<GEDGraph::GraphID> & graph_ids, GEDGraph::GraphID median_i
 
 	// Construct initial medians.
 	std::vector<ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel>> medians;
-	construct_initial_medians_(graph_ids, medians);
+	construct_initial_medians_(graph_ids, timer, medians);
 	auto end_init = std::chrono::high_resolution_clock::now();
 	runtime_initialized_ = end_init - start;
 
@@ -271,6 +288,7 @@ run(const std::vector<GEDGraph::GraphID> & graph_ids, GEDGraph::GraphID median_i
 	itrs_ = std::vector<std::size_t>(medians.size(), 0);
 	num_decrease_order_ = 0;
 	num_increase_order_ = 0;
+	num_converged_descents_ = 0;
 
 	// Initialize the best median.
 	double best_sum_of_distances{std::numeric_limits<double>::infinity()};
@@ -281,6 +299,11 @@ run(const std::vector<GEDGraph::GraphID> & graph_ids, GEDGraph::GraphID median_i
 	// Run block gradient descent from all initial medians.
 	ged_env_->set_method(descent_method_, descent_options_);
 	for (std::size_t median_pos{0}; median_pos < medians.size(); median_pos++) {
+
+		// Terminate if the timer has expired and at least one SOD has been computed.
+		if (timer.expired() and (median_pos > 0)) {
+			break;
+		}
 
 		// Print information about current iteration.
 		if (print_to_stdout_ == 2) {
@@ -343,9 +366,9 @@ run(const std::vector<GEDGraph::GraphID> & graph_ids, GEDGraph::GraphID median_i
 
 			// Update the median.
 			median_modified = update_median_(graphs, median);
-			if (not median_modified) {
+			if (not median_modified or itrs_.at(median_pos) == 0) {
 				decreased_order = decrease_order_(graphs, median);
-				if (not decreased_order) {
+				if (not decreased_order or itrs_.at(median_pos) == 0) {
 					increased_order = increase_order_(graphs, median);
 				}
 			}
@@ -420,6 +443,11 @@ run(const std::vector<GEDGraph::GraphID> & graph_ids, GEDGraph::GraphID median_i
 			node_maps_from_best_median = node_maps_from_median_;
 			best_median = median;
 		}
+
+		// Update the number of converged descents.
+		if (converged) {
+			num_converged_descents_++;
+		}
 	}
 
 	// Store the best encountered median.
@@ -433,12 +461,13 @@ run(const std::vector<GEDGraph::GraphID> & graph_ids, GEDGraph::GraphID median_i
 	// Refine the sum of distances and the node maps for the converged median.
 	converged_sum_of_distances_ = sum_of_distances_;
 	if (refine_) {
-		improve_sum_of_distances_();
+		improve_sum_of_distances_(timer);
 	}
 
-	// Record end time and set runtime.
+	// Record end time, set runtime and reset the number of initial medians.
 	auto end = std::chrono::high_resolution_clock::now();
 	runtime_ = end - start;
+	num_random_inits_ = desired_num_random_inits_;
 
 	// Print global information.
 	if (print_to_stdout_ != 0) {
@@ -448,7 +477,7 @@ run(const std::vector<GEDGraph::GraphID> & graph_ids, GEDGraph::GraphID median_i
 		std::cout << "Best SOD after initialization: " << best_init_sum_of_distances_ << "\n";
 		std::cout << "Converged SOD: " << converged_sum_of_distances_ << "\n";
 		if (refine_) {
-			std::cout << "Refined converged SOD: " << sum_of_distances_ << "\n";
+			std::cout << "Refined SOD: " << sum_of_distances_ << "\n";
 		}
 		std::cout << "Overall runtime: " << runtime_.count() << "\n";
 		std::cout << "Runtime of initialization: " << runtime_initialized_.count() << "\n";
@@ -458,13 +487,19 @@ run(const std::vector<GEDGraph::GraphID> & graph_ids, GEDGraph::GraphID median_i
 		}
 		std::cout << "Number of initial medians: " << medians.size() << "\n";
 		std::size_t total_itr{0};
+		std::size_t num_started_descents{0};
 		for (auto itr : itrs_) {
 			total_itr += itr;
+			if (itr > 0) {
+				num_started_descents++;
+			}
 		}
 		std::cout << "Size of graph collection: " << graph_ids.size() << "\n";
-		std::cout << "Mean number of iterations: " << static_cast<double>(total_itr) / static_cast<double>(medians.size()) << "\n";
-		std::cout << "Mean number of times the order decreased: " << static_cast<double>(num_decrease_order_) / static_cast<double>(medians.size()) << "\n";
-		std::cout << "Mean number of times the order increased: " << static_cast<double>(num_increase_order_) / static_cast<double>(medians.size()) << "\n";
+		std::cout << "Number of started descents: " << num_started_descents << "\n";
+		std::cout << "Number of converged descents: " << num_converged_descents_ << "\n";
+		std::cout << "Overall number of iterations: " << total_itr << "\n";
+		std::cout << "Overall number of times the order decreased: " << num_decrease_order_<< "\n";
+		std::cout << "Overall number of times the order increased: " << num_increase_order_ << "\n";
 		std::cout << "===========================================================\n";
 	}
 }
@@ -472,7 +507,7 @@ run(const std::vector<GEDGraph::GraphID> & graph_ids, GEDGraph::GraphID median_i
 template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
 void
 MedianGraphEstimator<UserNodeID, UserNodeLabel, UserEdgeLabel>::
-improve_sum_of_distances_() {
+improve_sum_of_distances_(const Timer & timer) {
 	// Use method selected for refinement phase.
 	ged_env_->set_method(refine_method_, refine_options_);
 
@@ -486,8 +521,13 @@ improve_sum_of_distances_() {
 	}
 
 	// Improving the node maps.
-	sum_of_distances_ = 0;
 	for (auto & key_val : node_maps_from_median_) {
+		if (timer.expired()) {
+			if (state_ == Options::AlgorithmState::TERMINATED) {
+				state_ = Options::AlgorithmState::CONVERGED;
+			}
+			break;
+		}
 		GEDGraph::GraphID graph_id{key_val.first};
 		NodeMap & node_map{key_val.second};
 		ged_env_->run_method(median_id_, graph_id);
@@ -501,6 +541,10 @@ improve_sum_of_distances_() {
 			std::cout << "\rImproving node maps: " << progress << std::flush;
 		}
 	}
+	sum_of_distances_ = 0;
+	for (auto & key_val : node_maps_from_median_) {
+		sum_of_distances_ += key_val.second.induced_cost();
+	}
 
 	// Print information.
 	if (print_to_stdout_ == 2) {
@@ -509,13 +553,34 @@ improve_sum_of_distances_() {
 }
 
 template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
+bool
+MedianGraphEstimator<UserNodeID, UserNodeLabel, UserEdgeLabel>::
+median_available_() const {
+	return (median_id_ != undefined());
+}
+
+template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
+Options::AlgorithmState
+MedianGraphEstimator<UserNodeID, UserNodeLabel, UserEdgeLabel>::
+get_state() const {
+	if (not median_available_()) {
+		throw Error("No median has been computed. Call run() before calling get_state().");
+	}
+	return state_;
+}
+
+
+template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
 double
 MedianGraphEstimator<UserNodeID, UserNodeLabel, UserEdgeLabel>::
-get_sum_of_distances(Options::MedianGraphEstimatorState state) const {
-	if (state == Options::MedianGraphEstimatorState::INITIALIZED) {
+get_sum_of_distances(Options::AlgorithmState state) const {
+	if (not median_available_()) {
+		throw Error("No median has been computed. Call run() before calling get_sum_of_distances().");
+	}
+	if (state == Options::AlgorithmState::INITIALIZED) {
 		return best_init_sum_of_distances_;
 	}
-	if (state == Options::MedianGraphEstimatorState::CONVERGED) {
+	if (state == Options::AlgorithmState::CONVERGED) {
 		return converged_sum_of_distances_;
 	}
 	return sum_of_distances_;
@@ -525,7 +590,10 @@ template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
 double
 MedianGraphEstimator<UserNodeID, UserNodeLabel, UserEdgeLabel>::
 get_distance_from_median(GEDGraph::GraphID graph_id) const {
-	if (node_maps_from_median_.at(graph_id) == node_maps_from_median_.end()) {
+	if (not median_available_()) {
+		throw Error("No median has been computed. Call run() before calling get_distance_from_median().");
+	}
+	if (node_maps_from_median_.find(graph_id) == node_maps_from_median_.end()) {
 		throw Error("No distance available for graph with ID " + std::to_string(graph_id) + ".");
 	}
 	return node_maps_from_median_.at(graph_id).induced_cost();
@@ -535,20 +603,37 @@ template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
 const NodeMap &
 MedianGraphEstimator<UserNodeID, UserNodeLabel, UserEdgeLabel>::
 get_node_map_from_median(GEDGraph::GraphID graph_id) const {
-	if (node_maps_from_median_.at(graph_id) == node_maps_from_median_.end()) {
+	if (not median_available_()) {
+		throw Error("No median has been computed. Call run() before calling get_node_map_from_median().");
+	}
+	if (node_maps_from_median_.find(graph_id) == node_maps_from_median_.end()) {
 		throw Error("No node map available for graph with ID " + std::to_string(graph_id) + ".");
 	}
 	return node_maps_from_median_.at(graph_id);
 }
 
 template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
+const NodeMap &
+MedianGraphEstimator<UserNodeID, UserNodeLabel, UserEdgeLabel>::
+compute_node_map_from_median(GEDGraph::GraphID graph_id) const {
+	if (not median_available_()) {
+		throw Error("No median has been computed. Call run() before calling compute_node_map_from_median().");
+	}
+	ged_env_->run_method(median_id_, graph_id);
+	return ged_env_->get_node_map(median_id_, graph_id);
+}
+
+template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
 double
 MedianGraphEstimator<UserNodeID, UserNodeLabel, UserEdgeLabel>::
-get_runtime(Options::MedianGraphEstimatorState state) const {
-	if (state == Options::MedianGraphEstimatorState::INITIALIZED) {
+get_runtime(Options::AlgorithmState state) const {
+	if (not median_available_()) {
+		throw Error("No median has been computed. Call run() before calling get_runtime().");
+	}
+	if (state == Options::AlgorithmState::INITIALIZED) {
 		return runtime_initialized_.count();
 	}
-	if (state == Options::MedianGraphEstimatorState::CONVERGED) {
+	if (state == Options::AlgorithmState::CONVERGED) {
 		return runtime_converged_.count();
 	}
 	return runtime_.count();
@@ -558,6 +643,9 @@ template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
 const vector<std::size_t> &
 MedianGraphEstimator<UserNodeID, UserNodeLabel, UserEdgeLabel>::
 get_num_itrs() const {
+	if (not median_available_()) {
+		throw Error("No median has been computed. Call run() before calling get_num_itrs().");
+	}
 	return itrs_;
 }
 
@@ -565,6 +653,9 @@ template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
 std::size_t
 MedianGraphEstimator<UserNodeID, UserNodeLabel, UserEdgeLabel>::
 get_num_times_order_decreased() const {
+	if (not median_available_()) {
+		throw Error("No median has been computed. Call run() before calling get_num_times_order_decreased().");
+	}
 	return num_decrease_order_;
 }
 
@@ -572,7 +663,20 @@ template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
 std::size_t
 MedianGraphEstimator<UserNodeID, UserNodeLabel, UserEdgeLabel>::
 get_num_times_order_increased() const {
+	if (not median_available_()) {
+		throw Error("No median has been computed. Call run() before calling get_num_times_order_increased().");
+	}
 	return num_increase_order_;
+}
+
+template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
+std::size_t
+MedianGraphEstimator<UserNodeID, UserNodeLabel, UserEdgeLabel>::
+get_num_converged_descents() const {
+	if (not median_available_()) {
+		throw Error("No median has been computed. Call run() before calling get_num_converged_descents().");
+	}
+	return num_converged_descents_;
 }
 
 template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
@@ -586,8 +690,9 @@ template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
 void
 MedianGraphEstimator<UserNodeID, UserNodeLabel, UserEdgeLabel>::
 set_default_options_() {
-	init_type_ = "MEDOID";
+	init_type_ = "RANDOM";
 	num_random_inits_ = 10;
+	desired_num_random_inits_ = 10;
 	use_real_randomness_ = true;
 	seed_ = 0;
 	refine_ = true;
@@ -604,7 +709,7 @@ set_default_options_() {
 template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
 void
 MedianGraphEstimator<UserNodeID, UserNodeLabel, UserEdgeLabel>::
-construct_initial_medians_(const std::vector<GEDGraph::GraphID> & graph_ids, std::vector<ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel>> & initial_medians) const {
+construct_initial_medians_(const std::vector<GEDGraph::GraphID> & graph_ids, const Timer & timer, std::vector<ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel>> & initial_medians) {
 	// Print information about current iteration.
 	if (print_to_stdout_ == 2) {
 		std::cout << "\n===========================================================\n";
@@ -615,7 +720,16 @@ construct_initial_medians_(const std::vector<GEDGraph::GraphID> & graph_ids, std
 	// Compute or sample the initial median(s).
 	initial_medians.clear();
 	if (init_type_ == "MEDOID") {
-		compute_medoid_(graph_ids, initial_medians);
+		compute_medoid_(graph_ids, timer, initial_medians);
+	}
+	else if (init_type_ == "MAX") {
+		compute_max_order_graph_(graph_ids, initial_medians);
+	}
+	else if (init_type_ == "MIN") {
+		compute_min_order_graph_(graph_ids, initial_medians);
+	}
+	else if (init_type_ == "MEAN") {
+		compute_mean_order_graph_(graph_ids, initial_medians);
 	}
 	else {
 		sample_initial_medians_(graph_ids, initial_medians);
@@ -630,7 +744,65 @@ construct_initial_medians_(const std::vector<GEDGraph::GraphID> & graph_ids, std
 template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
 void
 MedianGraphEstimator<UserNodeID, UserNodeLabel, UserEdgeLabel>::
-compute_medoid_(const std::vector<GEDGraph::GraphID> & graph_ids, std::vector<ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel>> & initial_medians) const {
+compute_max_order_graph_(const std::vector<GEDGraph::GraphID> & graph_ids, std::vector<ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel>> & initial_medians) const  {
+	GEDGraph::GraphID max_order_id{0};
+	std::size_t max_order{0};
+	for (auto g_id : graph_ids) {
+		if (ged_env_->get_num_nodes(g_id) > max_order) {
+			max_order = ged_env_->get_num_nodes(g_id);
+			max_order_id = g_id;
+		}
+	}
+	initial_medians.emplace_back(ged_env_->get_graph(max_order_id, true, true, false));
+}
+
+template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
+void
+MedianGraphEstimator<UserNodeID, UserNodeLabel, UserEdgeLabel>::
+compute_min_order_graph_(const std::vector<GEDGraph::GraphID> & graph_ids, std::vector<ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel>> & initial_medians) const  {
+	GEDGraph::GraphID min_order_id{0};
+	std::size_t min_order{std::numeric_limits<std::size_t>::infinity()};
+	for (auto g_id : graph_ids) {
+		if (ged_env_->get_num_nodes(g_id) < min_order) {
+			min_order = ged_env_->get_num_nodes(g_id);
+			min_order_id = g_id;
+		}
+	}
+	initial_medians.emplace_back(ged_env_->get_graph(min_order_id, true, true, false));
+}
+
+template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
+void
+MedianGraphEstimator<UserNodeID, UserNodeLabel, UserEdgeLabel>::
+compute_mean_order_graph_(const std::vector<GEDGraph::GraphID> & graph_ids, std::vector<ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel>> & initial_medians) const  {
+	std::vector<std::pair<std::size_t, GEDGraph::GraphID>> order_id_pairs;
+	std::size_t sum_orders{0};
+	for (auto g_id : graph_ids) {
+		sum_orders += ged_env_->get_num_nodes(g_id);
+		order_id_pairs.emplace_back(ged_env_->get_num_nodes(g_id), g_id);
+	}
+	std::sort(order_id_pairs.begin(), order_id_pairs.end());
+	double mean_order{static_cast<double>(sum_orders) / static_cast<double>(graph_ids.size())};
+	std::size_t median_pos{0};
+	for (std::size_t pos{0}; pos < graph_ids.size(); pos++) {
+		if (static_cast<double>(order_id_pairs.at(pos).first) >= mean_order) {
+			median_pos = pos;
+			break;
+		}
+	}
+	if (median_pos > 0) {
+		if (mean_order - static_cast<double>(order_id_pairs.at(median_pos - 1).first) < static_cast<double>(order_id_pairs.at(median_pos).first) - mean_order) {
+			median_pos--;
+		}
+	}
+	initial_medians.emplace_back(ged_env_->get_graph(order_id_pairs.at(median_pos).second, true, true, false));
+}
+
+
+template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
+void
+MedianGraphEstimator<UserNodeID, UserNodeLabel, UserEdgeLabel>::
+compute_medoid_(const std::vector<GEDGraph::GraphID> & graph_ids, const Timer & timer, std::vector<ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel>> & initial_medians) {
 	// Use method selected for initialization phase.
 	ged_env_->set_method(init_method_, init_options_);
 
@@ -641,9 +813,13 @@ compute_medoid_(const std::vector<GEDGraph::GraphID> & graph_ids, std::vector<Ex
 	}
 
 	// Compute the medoid.
-	GEDGraph::GraphID medoid_id{0};
+	GEDGraph::GraphID medoid_id{graph_ids.at(0)};
 	double best_sum_of_distances{std::numeric_limits<double>::infinity()};
 	for (auto g_id : graph_ids) {
+		if (timer.expired()) {
+			state_ = Options::AlgorithmState::CALLED;
+			break;
+		}
 		double sum_of_distances{0};
 		for (auto h_id : graph_ids) {
 			ged_env_->run_method(g_id, h_id);
@@ -670,16 +846,16 @@ compute_medoid_(const std::vector<GEDGraph::GraphID> & graph_ids, std::vector<Ex
 template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
 void
 MedianGraphEstimator<UserNodeID, UserNodeLabel, UserEdgeLabel>::
-sample_initial_medians_(const std::vector<GEDGraph::GraphID> & graph_ids, std::vector<ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel>> & initial_medians) const {
+sample_initial_medians_(const std::vector<GEDGraph::GraphID> & graph_ids, std::vector<ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel>> & initial_medians) {
 	// Print information about current iteration.
 	ged::ProgressBar progress(num_random_inits_);
 	if (print_to_stdout_ == 2) {
 		std::cout << "\rSampling initial medians: " << progress << std::flush;
 	}
 
-	// Sanity check.
+	// Set the number of initial medians to the size of the collection, if it exceeds this size (undone at the end of run()).
 	if (num_random_inits_ > graph_ids.size()) {
-		throw Error("The number of initial medians is selected to be greater than the size of the collection.");
+		num_random_inits_ = graph_ids.size();
 	}
 
 	// Set the seed of the random number generator.
@@ -692,7 +868,7 @@ sample_initial_medians_(const std::vector<GEDGraph::GraphID> & graph_ids, std::v
 		urng.seed(seed_);
 	}
 
-	// Sample intial medians.
+	// Sample initial medians.
 	std::vector<GEDGraph::GraphID> shuffled_graph_ids(graph_ids);
 	for (std::size_t pos{0}; pos < num_random_inits_; pos++) {
 		std::shuffle(shuffled_graph_ids.begin(), shuffled_graph_ids.end(), urng);
@@ -713,8 +889,14 @@ sample_initial_medians_(const std::vector<GEDGraph::GraphID> & graph_ids, std::v
 template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
 bool
 MedianGraphEstimator<UserNodeID, UserNodeLabel, UserEdgeLabel>::
-termination_criterion_met_(bool converged, const Timer & timer, std::size_t itr, std::size_t itrs_without_update) const {
-	return converged or timer.expired() or (max_itrs_ >= 0 ? itr >= max_itrs_ : false) or (max_itrs_without_update_ >= 0 ? itrs_without_update > max_itrs_without_update_ : false);
+termination_criterion_met_(bool converged, const Timer & timer, std::size_t itr, std::size_t itrs_without_update) {
+	if (timer.expired() or (max_itrs_ >= 0 ? itr >= max_itrs_ : false)) {
+		if (state_ == Options::AlgorithmState::TERMINATED) {
+			state_ = Options::AlgorithmState::INITIALIZED;
+		}
+		return true;
+	}
+	return converged or (max_itrs_without_update_ >= 0 ? itrs_without_update > max_itrs_without_update_ : false);
 }
 
 template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
@@ -899,29 +1081,23 @@ decrease_order_(const std::map<GEDGraph::GraphID, ExchangeGraph<UserNodeID, User
 		std::cout << "Trying to decrease order: ... " << std::flush;
 	}
 
-	// Compute best deletion delta and determine deleted node.
+	// Initialize ID of the node that is to be deleted.
 	std::size_t id_deleted_node{undefined()};
-	double best_delta{compute_best_deletion_delta_(graphs, median, id_deleted_node)};
+	bool decreased_order{false};
 
-	// Return false if deleting a node does not improve the median.
-	if (best_delta > -epsilon_) {
-		// Print information about current iteration.
-		if (print_to_stdout_ == 2) {
-			std::cout << "done.\n";
-		}
-		return false;
+	// Decrease the order as long as the best deletion delta is negative.
+	while (compute_best_deletion_delta_(graphs, median, id_deleted_node) < -epsilon_) {
+		decreased_order = true;
+		delete_node_from_median_(id_deleted_node, median);
 	}
-
-	// Otherwise, delete the node that yielded the best delta from the median.
-	delete_node_from_median_(id_deleted_node, median);
 
 	// Print information about current iteration.
 	if (print_to_stdout_ == 2) {
 		std::cout << "done.\n";
 	}
 
-	// Return true since the order was decreased.
-	return true;
+	// Return true iff the order was decreased.
+	return decreased_order;
 }
 
 template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
@@ -1047,10 +1223,35 @@ increase_order_(const std::map<GEDGraph::GraphID, ExchangeGraph<UserNodeID, User
 		std::cout << "Trying to increase order: ... " << std::flush;
 	}
 
+	// Initialize the best configuration and the best label of the node that is to be inserted.
+	std::map<GEDGraph::GraphID, std::size_t> best_config;
+	UserNodeLabel best_label{ged_env_->get_node_label(1)};
+	bool increased_order{false};
+
+	// Increase the order as long as the best insertion delta is negative.
+	while (compute_best_insertion_delta_(graphs, best_config, best_label) < -epsilon_) {
+		increased_order = true;
+		add_node_to_median_(best_config, best_label, median);
+	}
+
+	// Print information about current iteration.
+	if (print_to_stdout_ == 2) {
+		std::cout << "done.\n";
+	}
+
+	// Return true iff the order was increased.
+	return increased_order;
+}
+
+template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
+double
+MedianGraphEstimator<UserNodeID, UserNodeLabel, UserEdgeLabel>::
+compute_best_insertion_delta_(const std::map<GEDGraph::GraphID, ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel>> & graphs, 
+		std::map<GEDGraph::GraphID, std::size_t> & best_config, UserNodeLabel & best_label) const {
+
 	// Construct sets of inserted nodes.
 	bool no_inserted_node{true};
 	std::map<GEDGraph::GraphID, std::vector<std::pair<std::size_t, UserNodeLabel>>> inserted_nodes;
-	std::map<GEDGraph::GraphID, std::size_t> best_config;
 	for (const auto & key_val : graphs) {
 		GEDGraph::GraphID graph_id{key_val.first};
 		const ExchangeGraph<UserNodeID, UserNodeLabel, UserEdgeLabel> & graph{key_val.second};
@@ -1064,18 +1265,13 @@ increase_order_(const std::map<GEDGraph::GraphID, ExchangeGraph<UserNodeID, User
 		}
 	}
 
-	// Return false if no node is inserted in any of the graphs.
+	// Return 0.0 if no node is inserted in any of the graphs.
 	if (no_inserted_node) {
-		// Print information about current iteration.
-		if (print_to_stdout_ == 2) {
-			std::cout << "done.\n";
-		}
-		return false;
+		return 0.0;
 	}
 
 	// Compute insertion configuration, label, and delta.
 	double best_delta;
-	UserNodeLabel best_label{ged_env_->get_node_label(1)};
 	if (not labeled_nodes_) {
 		best_delta = compute_insertion_delta_unlabeled_(inserted_nodes, best_config, best_label);
 	}
@@ -1086,26 +1282,9 @@ increase_order_(const std::map<GEDGraph::GraphID, ExchangeGraph<UserNodeID, User
 		best_delta = compute_insertion_delta_generic_(inserted_nodes, best_config, best_label);
 	}
 
+	// Return the best delta.
+	return best_delta;
 
-	// Return false if inserting an isolated node does not improve the median.
-	if (best_delta > -epsilon_) {
-		// Print information about current iteration.
-		if (print_to_stdout_ == 2) {
-			std::cout << "done.\n";
-		}
-		return false;
-	}
-
-	// Otherwise, use the configuration that yielded the best delta to add an isolated node to the median.
-	add_node_to_median_(best_config, best_label, median);
-
-	// Print information about current iteration.
-	if (print_to_stdout_ == 2) {
-		std::cout << "done.\n";
-	}
-
-	// Return true since the order was increased.
-	return true;
 }
 
 template<class UserNodeID, class UserNodeLabel, class UserEdgeLabel>
@@ -1446,7 +1625,11 @@ add_node_to_median_(const std::map<GEDGraph::GraphID, std::size_t> & best_config
 	}
 	median.num_nodes++;
 	median.node_labels.emplace_back(best_label);
-	median.original_node_ids.emplace_back(median.original_node_ids.back() + median.original_node_ids.back());
+	UserNodeID new_node_id(median_node_id_prefix_);
+	for (const auto & original_node_id : median.original_node_ids) {
+		new_node_id += original_node_id;
+	}
+	median.original_node_ids.emplace_back(new_node_id);
 	median.adj_matrix.emplace_back(std::vector<std::size_t>(median.num_nodes, 0));
 	median.adj_lists.emplace_back(std::list<std::pair<std::size_t, UserEdgeLabel>>());
 
