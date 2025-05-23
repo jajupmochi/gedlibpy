@@ -1,6 +1,8 @@
 GEDLIBPY
 ====================================
 
+**[ATTENTION: This library has been archived. The newest version is integrated to the `graphkit-learn` library: https://github.com/jajupmochi/graphkit-learn/tree/master/gklearn/gedlib.]**
+
 Please Read https://dbblumenthal.github.io/gedlib/ before using Python code.
 You can also find this module documentation in documentation/build/html folder. 
 
